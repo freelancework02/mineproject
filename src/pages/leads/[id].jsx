@@ -5,6 +5,7 @@ import SupabaseSetupNotice from "@/components/auth/SupabaseSetupNotice";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { useProtectedRoute } from "@/hooks/useProtectedRoute";
 import { LEAD_STATUS_OPTIONS } from "@/lib/leadConstants";
+import { TASK_STATUS_OPTIONS, TASK_TYPE_OPTIONS } from "@/lib/taskConstants";
 import { authApi } from "@/utils/api";
 
 export default function LeadProfilePage() {
@@ -14,9 +15,14 @@ export default function LeadProfilePage() {
   const [activities, setActivities] = useState([]);
   const [calls, setCalls] = useState([]);
   const [smsLogs, setSmsLogs] = useState([]);
+  const [emailLogs, setEmailLogs] = useState([]);
+  const [notes, setNotes] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [assignees, setAssignees] = useState({ users: [], teams: [] });
   const [note, setNote] = useState("");
+  const [taskForm, setTaskForm] = useState({ title: "", taskType: "follow_up", dueAt: "", reminderAt: "", assignedTo: "" });
   const [smsMessage, setSmsMessage] = useState("");
+  const [emailForm, setEmailForm] = useState({ subject: "", body: "" });
   const [callNotes, setCallNotes] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -56,6 +62,42 @@ export default function LeadProfilePage() {
     setSmsLogs(data.logs);
   }, [leadId]);
 
+  const loadEmailLogs = useCallback(async () => {
+    if (!leadId) return;
+    const client = await authApi();
+    const { data } = await client.get("/api/email/logs", {
+      params: {
+        leadId,
+        pageSize: 20
+      }
+    });
+    setEmailLogs(data.logs);
+  }, [leadId]);
+
+  const loadNotes = useCallback(async () => {
+    if (!leadId) return;
+    const client = await authApi();
+    const { data } = await client.get("/api/notes", {
+      params: {
+        leadId,
+        pageSize: 20
+      }
+    });
+    setNotes(data.notes);
+  }, [leadId]);
+
+  const loadTasks = useCallback(async () => {
+    if (!leadId) return;
+    const client = await authApi();
+    const { data } = await client.get("/api/tasks", {
+      params: {
+        leadId,
+        pageSize: 20
+      }
+    });
+    setTasks(data.tasks);
+  }, [leadId]);
+
   const loadProfile = useCallback(async () => {
     if (!leadId) return;
     setBusy(true);
@@ -63,18 +105,25 @@ export default function LeadProfilePage() {
 
     try {
       const client = await authApi();
-      const [leadResult, activityResult, assigneeResult, callsResult, smsResult] = await Promise.all([
+      const [leadResult, activityResult, assigneeResult, callsResult, smsResult, emailResult, notesResult, tasksResult] = await Promise.all([
         client.get(`/api/leads/${leadId}`),
         client.get(`/api/leads/${leadId}/activities`),
         client.get("/api/leads/assignees"),
         client.get("/api/calls", { params: { leadId, pageSize: 20 } }),
-        client.get("/api/sms/logs", { params: { leadId, pageSize: 20 } })
+        client.get("/api/sms/logs", { params: { leadId, pageSize: 20 } }),
+        client.get("/api/email/logs", { params: { leadId, pageSize: 20 } }),
+        client.get("/api/notes", { params: { leadId, pageSize: 20 } }),
+        client.get("/api/tasks", { params: { leadId, pageSize: 20 } })
       ]);
       setLead(leadResult.data.lead);
       setActivities(activityResult.data.activities);
       setAssignees(assigneeResult.data);
       setCalls(callsResult.data.calls);
       setSmsLogs(smsResult.data.logs);
+      setEmailLogs(emailResult.data.logs);
+      setNotes(notesResult.data.notes);
+      setTasks(tasksResult.data.tasks);
+      setTaskForm((current) => ({ ...current, assignedTo: leadResult.data.lead.owner_id || "" }));
       setCallNotes(Object.fromEntries(callsResult.data.calls.map((call) => [call.id, call.notes || ""])));
     } catch (loadError) {
       setError(loadError.response?.data?.error || "Unable to load lead profile.");
@@ -177,6 +226,31 @@ export default function LeadProfilePage() {
     }
   }
 
+  async function sendLeadEmail(event) {
+    event.preventDefault();
+    if (!emailForm.subject.trim() || !emailForm.body.trim()) return;
+
+    setBusy(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const client = await authApi();
+      await client.post("/api/email/send", {
+        leadId: lead.id,
+        subject: emailForm.subject,
+        body: emailForm.body
+      });
+      setEmailForm({ subject: "", body: "" });
+      await Promise.all([loadEmailLogs(), loadActivities()]);
+      setNotice("Email sent.");
+    } catch (emailError) {
+      setError(emailError.response?.data?.error || "Unable to send email.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function addNote(event) {
     event.preventDefault();
     if (!note.trim()) return;
@@ -187,15 +261,60 @@ export default function LeadProfilePage() {
 
     try {
       const client = await authApi();
-      await client.post(`/api/leads/${lead.id}/activities`, {
-        activity_type: "note",
+      await client.post("/api/notes", {
+        leadId: lead.id,
         body: note
       });
       setNote("");
-      await loadActivities();
+      await Promise.all([loadNotes(), loadActivities()]);
       setNotice("Note added.");
     } catch (noteError) {
       setError(noteError.response?.data?.error || "Unable to add note.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createTask(event) {
+    event.preventDefault();
+    if (!taskForm.title.trim()) return;
+
+    setBusy(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const client = await authApi();
+      await client.post("/api/tasks", {
+        leadId: lead.id,
+        title: taskForm.title,
+        taskType: taskForm.taskType,
+        dueAt: toIsoOrNull(taskForm.dueAt),
+        reminderAt: toIsoOrNull(taskForm.reminderAt),
+        assignedTo: taskForm.assignedTo || null
+      });
+      setTaskForm({ title: "", taskType: "follow_up", dueAt: "", reminderAt: "", assignedTo: lead.owner_id || "" });
+      await Promise.all([loadTasks(), loadActivities()]);
+      setNotice("Task created.");
+    } catch (taskError) {
+      setError(taskError.response?.data?.error || "Unable to create task.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateTask(taskId, patch) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const client = await authApi();
+      await client.patch(`/api/tasks/${taskId}`, patch);
+      await Promise.all([loadTasks(), loadActivities()]);
+      setNotice("Task updated.");
+    } catch (taskError) {
+      setError(taskError.response?.data?.error || "Unable to update task.");
     } finally {
       setBusy(false);
     }
@@ -311,6 +430,70 @@ export default function LeadProfilePage() {
           </form>
 
           <div className="mt-6 border-t border-slate-200 pt-5">
+            <p className="text-sm font-semibold uppercase tracking-wide text-moss">Create task</p>
+            <form className="mt-3 space-y-3" onSubmit={createTask}>
+              <input
+                value={taskForm.title}
+                onChange={(event) => setTaskForm((current) => ({ ...current, title: event.target.value }))}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                placeholder="Follow up with lead"
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <select
+                  value={taskForm.taskType}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, taskType: event.target.value }))}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                >
+                  {TASK_TYPE_OPTIONS.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={taskForm.assignedTo}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, assignedTo: event.target.value }))}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                >
+                  <option value="">Assign to me</option>
+                  {assignees.users.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-500">Due</span>
+                  <input
+                    type="datetime-local"
+                    value={taskForm.dueAt}
+                    onChange={(event) => setTaskForm((current) => ({ ...current, dueAt: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-500">Reminder</span>
+                  <input
+                    type="datetime-local"
+                    value={taskForm.reminderAt}
+                    onChange={(event) => setTaskForm((current) => ({ ...current, reminderAt: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                  />
+                </label>
+              </div>
+              <button
+                type="submit"
+                disabled={busy || !taskForm.title.trim()}
+                className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Create Task
+              </button>
+            </form>
+          </div>
+
+          <div className="mt-6 border-t border-slate-200 pt-5">
             <p className="text-sm font-semibold uppercase tracking-wide text-moss">Single SMS</p>
             <form className="mt-3 space-y-3" onSubmit={sendSms}>
               <textarea
@@ -333,8 +516,101 @@ export default function LeadProfilePage() {
               </div>
             </form>
           </div>
+
+          <div className="mt-6 border-t border-slate-200 pt-5">
+            <p className="text-sm font-semibold uppercase tracking-wide text-moss">Single Email</p>
+            <form className="mt-3 space-y-3" onSubmit={sendLeadEmail}>
+              <input
+                value={emailForm.subject}
+                onChange={(event) => setEmailForm((current) => ({ ...current, subject: event.target.value }))}
+                maxLength="200"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                placeholder={`Subject for ${lead.name}`}
+              />
+              <textarea
+                value={emailForm.body}
+                onChange={(event) => setEmailForm((current) => ({ ...current, body: event.target.value }))}
+                rows="6"
+                maxLength="10000"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+                placeholder={`Email ${lead.name}`}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-500">{emailForm.body.length}/10000</p>
+                <button
+                  type="submit"
+                  disabled={busy || !emailForm.subject.trim() || !emailForm.body.trim()}
+                  className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  Send Email
+                </button>
+              </div>
+            </form>
+          </div>
         </section>
       </div>
+
+      <section className="mt-6 grid gap-6 xl:grid-cols-2">
+        <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-moss">Notes</p>
+          <div className="mt-4 space-y-3">
+            {notes.map((item) => (
+              <div key={item.id} className="rounded-lg border border-slate-200 p-4">
+                <p className="whitespace-pre-wrap text-sm text-slate-700">{item.body}</p>
+                <p className="mt-2 text-xs text-slate-500">
+                  {item.creator?.name || "CRM user"} - {new Date(item.created_at).toLocaleString()}
+                </p>
+              </div>
+            ))}
+            {notes.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                No notes yet.
+              </p>
+            ) : null}
+          </div>
+        </article>
+
+        <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-wide text-moss">Tasks</p>
+          <div className="mt-4 space-y-3">
+            {tasks.map((task) => (
+              <div key={task.id} className="rounded-lg border border-slate-200 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 className="text-sm font-semibold text-ink">{task.title}</h2>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {formatTaskType(task.task_type)} - {task.assignee?.name || "Unassigned"}
+                    </p>
+                    <p className={`mt-1 text-xs ${isOverdue(task) ? "text-coral" : "text-slate-500"}`}>
+                      Due {task.due_at ? new Date(task.due_at).toLocaleString() : "not set"}
+                    </p>
+                    {task.reminder_at ? (
+                      <p className="mt-1 text-xs text-slate-500">Reminder {new Date(task.reminder_at).toLocaleString()}</p>
+                    ) : null}
+                  </div>
+                  <select
+                    value={task.status}
+                    onChange={(event) => updateTask(task.id, { status: event.target.value })}
+                    disabled={busy}
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 sm:w-40"
+                  >
+                    {TASK_STATUS_OPTIONS.map((status) => (
+                      <option key={status.value} value={status.value}>
+                        {status.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ))}
+            {tasks.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                No tasks yet.
+              </p>
+            ) : null}
+          </div>
+        </article>
+      </section>
 
       <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-semibold uppercase tracking-wide text-moss">Call history</p>
@@ -450,6 +726,47 @@ export default function LeadProfilePage() {
       </section>
 
       <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-sm font-semibold uppercase tracking-wide text-moss">Email history</p>
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full divide-y divide-slate-200 text-sm">
+            <thead>
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Subject</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Opens</th>
+                <th className="px-3 py-2">Clicks</th>
+                <th className="px-3 py-2">Sender</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {emailLogs.map((log) => (
+                <tr key={log.id}>
+                  <td className="px-3 py-3 text-slate-700">{new Date(log.created_at).toLocaleString()}</td>
+                  <td className="max-w-xl px-3 py-3 text-slate-700">{log.subject}</td>
+                  <td className="px-3 py-3">
+                    <span className="rounded-full bg-brand/10 px-2 py-1 text-xs font-medium text-brand">
+                      {formatStatus(log.status)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-slate-700">{log.open_count || 0}</td>
+                  <td className="px-3 py-3 text-slate-700">{log.click_count || 0}</td>
+                  <td className="px-3 py-3 text-slate-700">{log.creator?.name || "CRM user"}</td>
+                </tr>
+              ))}
+              {emailLogs.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="px-3 py-10 text-center text-slate-500">
+                    No email history yet.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-semibold uppercase tracking-wide text-moss">Activity timeline</p>
         <div className="mt-4 space-y-3">
           {activities.map((activity) => (
@@ -498,12 +815,30 @@ function activityText(activity) {
     if (data.message && data.status) return `SMS ${formatStatus(data.status)}: ${data.message}`;
     return "SMS activity logged.";
   }
-  if (activity.activity_type === "email") return "Email activity logged.";
-  if (activity.activity_type === "task") return "Task activity logged.";
+  if (activity.activity_type === "email") {
+    if (data.subject && data.status) return `Email ${formatStatus(data.status)}: ${data.subject}`;
+    return "Email activity logged.";
+  }
+  if (activity.activity_type === "task") {
+    if (data.title && data.status) return `Task ${formatStatus(data.status)}: ${data.title}`;
+    return "Task activity logged.";
+  }
 
   return "Lead activity logged.";
 }
 
 function formatStatus(status) {
   return String(status || "queued").replace(/_/g, " ");
+}
+
+function formatTaskType(type) {
+  return String(type || "follow_up").replace(/_/g, " ");
+}
+
+function isOverdue(task) {
+  return task.due_at && task.status !== "completed" && new Date(task.due_at).getTime() < Date.now();
+}
+
+function toIsoOrNull(value) {
+  return value ? new Date(value).toISOString() : null;
 }

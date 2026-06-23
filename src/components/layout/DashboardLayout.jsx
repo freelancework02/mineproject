@@ -7,7 +7,10 @@ const links = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/leads", label: "Leads" },
   { href: "/leads/import", label: "Lead Import" },
-  { href: "/sms", label: "SMS" }
+  { href: "/sms", label: "SMS" },
+  { href: "/email", label: "Email" },
+  { href: "/tasks", label: "Tasks" },
+  { href: "/twilio", label: "Twilio Admin", roles: ["super_admin", "admin", "manager"] }
 ];
 
 export default function DashboardLayout({ children }) {
@@ -26,7 +29,9 @@ export default function DashboardLayout({ children }) {
           Marketing CRM
         </Link>
         <nav className="mt-8 space-y-1">
-          {links.map((link) => (
+          {links
+            .filter((link) => !link.roles || link.roles.includes(profile?.role))
+            .map((link) => (
             <Link
               key={link.href}
               href={link.href}
